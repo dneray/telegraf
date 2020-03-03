@@ -41,13 +41,15 @@ type HTTPListener struct {
 	Port int
 	tlsint.ServerConfig
 
-	ReadTimeout   internal.Duration `toml:"read_timeout"`
-	WriteTimeout  internal.Duration `toml:"write_timeout"`
-	MaxBodySize   internal.Size     `toml:"max_body_size"`
-	MaxLineSize   internal.Size     `toml:"max_line_size"`
-	BasicUsername string            `toml:"basic_username"`
-	BasicPassword string            `toml:"basic_password"`
-	DatabaseTag   string            `toml:"database_tag"`
+	ReadTimeout    internal.Duration `toml:"read_timeout"`
+	WriteTimeout   internal.Duration `toml:"write_timeout"`
+	MaxBodySize    internal.Size     `toml:"max_body_size"`
+	MaxLineSize    internal.Size     `toml:"max_line_size"`
+	BasicUsername  string            `toml:"basic_username"`
+	BasicPassword  string            `toml:"basic_password"`
+	DatabaseTag    string            `toml:"database_tag"`
+	HTTPHeaderTags map[string]string `toml:"http_header_tags"`
+
 
 	TimeFunc
 
@@ -115,6 +117,12 @@ const sampleConfig = `
   ## You probably want to make sure you have TLS configured above for this.
   # basic_username = "foobar"
   # basic_password = "barfoo"
+
+
+  ## Optional setting to map http headers into tags
+  ## If the http header is not present on the request, it will be populated with an empty string
+  ## If multiple instances of the http header are present, only the first value will be used
+  #http_header_tags = {"SOME_HTTP_HEADER" = "MEASUREMENT_TAG_NAME"}
 `
 
 func (h *HTTPListener) SampleConfig() string {
@@ -325,7 +333,7 @@ func (h *HTTPListener) serveWrite(res http.ResponseWriter, req *http.Request) {
 
 		if err == io.ErrUnexpectedEOF {
 			// finished reading the request body
-			err = h.parse(buf[:n+bufStart], now, precision, db)
+			err = h.parse(buf[:n+bufStart], now, precision, db, req.Header)
 			if err != nil {
 				h.Log.Debugf("%s: %s", err.Error(), bufStart+n)
 				return400 = true
@@ -356,7 +364,7 @@ func (h *HTTPListener) serveWrite(res http.ResponseWriter, req *http.Request) {
 			bufStart = 0
 			continue
 		}
-		if err := h.parse(buf[:i+1], now, precision, db); err != nil {
+		if err := h.parse(buf[:i+1], now, precision, db, req.Header); err != nil {
 			h.Log.Debug(err.Error())
 			return400 = true
 		}
@@ -369,7 +377,7 @@ func (h *HTTPListener) serveWrite(res http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (h *HTTPListener) parse(b []byte, t time.Time, precision, db string) error {
+func (h *HTTPListener) parse(b []byte, t time.Time, precision, db string, requestHeaders map[string][]string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -388,7 +396,18 @@ func (h *HTTPListener) parse(b []byte, t time.Time, precision, db string) error 
 		if h.DatabaseTag != "" && db != "" {
 			m.AddTag(h.DatabaseTag, db)
 		}
+		for headerName, measurementName := range h.HTTPHeaderTags {
+			var headerValue string
+			headerValues, foundHeader := requestHeaders[headerName]
+			if foundHeader && len(headerValues) > 0 {
+				headerValue = headerValues[0]
+			} else {
+				headerValue = ""
+			}
+			m.AddTag(measurementName, headerValue)
+		}
 		h.acc.AddFields(m.Name(), m.Fields(), m.Tags(), m.Time())
+
 	}
 
 	return nil

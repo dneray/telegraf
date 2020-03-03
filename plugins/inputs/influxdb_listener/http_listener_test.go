@@ -147,6 +147,67 @@ func TestWriteHTTPBasicAuth(t *testing.T) {
 	resp.Body.Close()
 	require.EqualValues(t, http.StatusNoContent, resp.StatusCode)
 }
+func TestWriteHTTPTransformHeaderValuesToTags(t *testing.T) {
+	listener := newTestHTTPListener()
+	listener.HTTPHeaderTags = map[string]string{"Present_http_header_1": "presentMeasurementKey1","Present_http_header_2": "presentMeasurementKey2", "NOT_PRESENT_HEADER":"notPresentMeasurementKey"}
+
+	acc := &testutil.Accumulator{}
+	require.NoError(t, listener.Start(acc))
+	defer listener.Stop()
+
+	// post single message to listener
+	req, err := http.NewRequest("POST", createURL(listener, "http", "/write", "db=mydb"), bytes.NewBuffer([]byte(testMsg)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "")
+	req.Header.Set("Present_http_header_1", "PRESENT_HTTP_VALUE_1")
+	req.Header.Set("Present_http_header_2", "PRESENT_HTTP_VALUE_2")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.EqualValues(t, 204, resp.StatusCode)
+
+	acc.Wait(1)
+	acc.AssertContainsTaggedFields(t, "cpu_load_short",
+		map[string]interface{}{"value": float64(12)},
+		map[string]string{"host": "server01", "notPresentMeasurementKey": "", "presentMeasurementKey1": "PRESENT_HTTP_VALUE_1", "presentMeasurementKey2": "PRESENT_HTTP_VALUE_2"},
+	)
+
+	// post single message to listener with a database tag in it already. It should be clobbered.
+	resp, err = http.Post(createURL(listener, "http", "/write", "db=mydb"), "", bytes.NewBuffer([]byte(testMsg)))
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.EqualValues(t, 204, resp.StatusCode)
+
+	acc.Wait(1)
+	acc.AssertContainsTaggedFields(t, "cpu_load_short",
+		map[string]interface{}{"value": float64(12)},
+		map[string]string{"host": "server01", "presentMeasurementKey1": "PRESENT_HTTP_VALUE_1", "presentMeasurementKey2": "PRESENT_HTTP_VALUE_2", "notPresentMeasurementKey": ""},
+	)
+
+	// post multiple message to listener
+
+	req, err = http.NewRequest("POST", createURL(listener, "http", "/write", "db=mydb"), bytes.NewBuffer([]byte(testMsgs)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "")
+	req.Header.Set("Present_http_header_1", "PRESENT_HTTP_VALUE_1")
+	req.Header.Set("Present_http_header_2", "PRESENT_HTTP_VALUE_2")
+	resp, err = http.DefaultClient.Do(req)
+
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.EqualValues(t, 204, resp.StatusCode)
+
+	acc.Wait(2)
+	hostTags := []string{"server02", "server03",
+		"server04", "server05", "server06"}
+	for _, hostTag := range hostTags {
+		acc.AssertContainsTaggedFields(t, "cpu_load_short",
+			map[string]interface{}{"value": float64(12)},
+			map[string]string{"host": hostTag, "notPresentMeasurementKey": "", "presentMeasurementKey1": "PRESENT_HTTP_VALUE_1", "presentMeasurementKey2": "PRESENT_HTTP_VALUE_2"},
+		)
+	}
+}
+
 
 func TestWriteHTTPKeepDatabase(t *testing.T) {
 	testMsgWithDB := "cpu_load_short,host=server01,database=wrongdb value=12.0 1422568543702900257\n"
